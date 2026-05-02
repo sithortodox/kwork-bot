@@ -1899,7 +1899,7 @@ def _send_main_menu(chat_id: int):
 
 
 def _send_main_categories_menu(chat_id: int):
-    from category_stats import get_parent_category_activity, get_total_projects_24h, get_top_active_categories, ALL_SUBCATEGORIES
+    from category_stats import get_parent_category_activity, get_total_projects_24h, get_top_active_categories
     
     user_cats = get_user_categories(chat_id)
     buttons = []
