@@ -41,8 +41,6 @@ KWORK_EMAIL = os.getenv("KWORK_EMAIL")
 KWORK_PASSWORD = os.getenv("KWORK_PASSWORD")
 
 MOSCOW_TZ = timezone(timedelta(hours=3))
-WORK_START = 7
-WORK_END = 23
 
 DATA_DIR = Path(__file__).parent / "data"
 SEEN_FILE = DATA_DIR / "seen_projects.json"
@@ -305,31 +303,20 @@ async def main():
         
         while True:
             try:
-                now_msk = datetime.now(MOSCOW_TZ)
-                hour_msk = now_msk.hour
-                
-                should_check = False
-                
                 if is_check_requested():
-                    should_check = True
                     clear_check_requested()
                     log.info("On-demand check triggered")
-                elif WORK_START <= hour_msk < WORK_END:
-                    should_check = True
                 
-                if should_check:
-                    try:
-                        new_ids = await fetch_and_notify(api, seen)
-                        if new_ids:
-                            seen.update(new_ids)
-                            save_seen(seen)
-                            log.info("Added %d new projects", len(new_ids))
-                        else:
-                            log.info("No new projects")
-                    except Exception as e:
-                        log.error("Error in check: %s", e, exc_info=True)
-                else:
-                    log.info("Outside work hours (07:00-23:00 MSK), current MSK time: %s", now_msk.strftime("%H:%M"))
+                try:
+                    new_ids = await fetch_and_notify(api, seen)
+                    if new_ids:
+                        seen.update(new_ids)
+                        save_seen(seen)
+                        log.info("Added %d new projects", len(new_ids))
+                    else:
+                        log.info("No new projects")
+                except Exception as e:
+                    log.error("Error in check: %s", e, exc_info=True)
                 
                 poll_interval = get_interval()
                 log.info("Sleeping %d seconds ...", poll_interval)
