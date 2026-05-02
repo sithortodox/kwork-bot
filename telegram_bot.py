@@ -471,6 +471,7 @@ def register_user(chat_id: int, referrer_id: int = None) -> bool:
                 "registered_at": time.time(),
                 "referrer_id": referrer_id,
                 "referrals_count": 0,
+                "onboarding_step": 1,  # Начинаем онбординг
             }
             
             if referrer_id and str(referrer_id) in users:
@@ -498,6 +499,143 @@ def set_user_categories(chat_id: int, categories: list):
         if str(chat_id) in users:
             users[str(chat_id)]["categories"] = categories
             save_users(users)
+
+
+def get_onboarding_step(chat_id: int) -> int:
+    """Возвращает текущий шаг онбординга (0 = завершен, 1-3 = в процессе)"""
+    users = load_users()
+    return users.get(str(chat_id), {}).get("onboarding_step", 0)
+
+
+def set_onboarding_step(chat_id: int, step: int):
+    """Устанавливает шаг онбординга"""
+    with _lock:
+        users = load_users()
+        if str(chat_id) in users:
+            users[str(chat_id)]["onboarding_step"] = step
+            save_users(users)
+
+
+def _send_onboarding_step_1(chat_id: int):
+    """Шаг 1/3: Выбор сферы деятельности"""
+    from category_stats import get_parent_category_activity, get_total_projects_24h
+    
+    total_24h = get_total_projects_24h()
+    
+    buttons = []
+    for parent_id, parent_data in CATEGORIES_TREE.items():
+        sub_ids = list(parent_data.get("subcategories", {}).keys())
+        activity = get_parent_category_activity(parent_id, sub_ids)
+        activity_text = f" 🔥{activity}" if activity > 0 else ""
+        buttons.append([{
+            "text": f"{parent_data['name']}{activity_text}",
+            "callback_data": f"onboard_cat:{parent_id}"
+        }])
+    
+    buttons.append([{"text": "⏭️ Пропустить", "callback_data": "onboard_skip"}])
+    
+    send_message(
+        chat_id,
+        f"👋 <b>Добро пожаловать!</b>\n\n"
+        f"Давайте настроим бот за 3 шага\n\n"
+        f"<b>[Шаг 1/3] 📂 Выберите вашу сферу</b>\n"
+        f"Какие проекты вам интересны?\n\n"
+        f"📊 Сегодня активных проектов: {total_24h}\n\n"
+        f"<i>💡 Можно выбрать несколько категорий</i>",
+        reply_markup={"inline_keyboard": buttons},
+    )
+
+
+def _send_onboarding_step_2(chat_id: int):
+    """Шаг 2/3: Настройка уведомлений"""
+    buttons = [
+        [{"text": "⚡ Всегда (24/7)", "callback_data": "onboard_time:always"}],
+        [{"text": "🕘 Рабочее время (09:00-18:00)", "callback_data": "onboard_time:work"}],
+        [{"text": "🌙 Вечер (18:00-23:00)", "callback_data": "onboard_time:evening"}],
+        [{"text": "⏭️ Настроить позже", "callback_data": "onboard_time:skip"}],
+    ]
+    
+    send_message(
+        chat_id,
+        f"<b>[Шаг 2/3] ⏰ Настройте уведомления</b>\n\n"
+        f"Когда вам удобно получать уведомления о проектах?\n\n"
+        f"<i>💡 Вы можете изменить это позже в Настройках</i>",
+        reply_markup={"inline_keyboard": buttons},
+    )
+
+
+def _send_onboarding_step_3(chat_id: int):
+    """Шаг 3/3: Завершение"""
+    user_cats = get_user_categories(chat_id)
+    hours = get_user_notification_hours(chat_id)
+    
+    # Подсчитаем количество выбранных категорий
+    cat_count = len([c for c in user_cats if ":" not in c])
+    filter_count = len([c for c in user_cats if ":" in c])
+    
+    # Определим время уведомлений
+    if hours.get("enabled"):
+        time_text = f"{hours['start']:02d}:00-{hours['end']:02d}:00"
+    else:
+        time_text = "24/7 (всегда)"
+    
+    # Подсчитаем ожидаемое количество уведомлений
+    from category_stats import get_activity_for_categories
+    activity = get_activity_for_categories(user_cats) if user_cats else {}
+    expected_daily = sum(activity.values())
+    
+    buttons = [
+        [{"text": "✅ Начать работу", "callback_data": "onboard_finish"}],
+        [{"text": "⚙️ Настроить точнее", "callback_data": "onboard_customize"}],
+    ]
+    
+    send_message(
+        chat_id,
+        f"<b>[Шаг 3/3] ✅ Почти готово!</b>\n\n"
+        f"<b>Ваши настройки:</b>\n"
+        f"📂 Категорий: {cat_count}\n"
+        f"⚙️ Фильтров: {filter_count}\n"
+        f"⏰ Уведомления: {time_text}\n\n"
+        f"<b>Ожидаемая активность:</b>\n"
+        f"📊 ~{expected_daily} проектов в день\n\n"
+        f"<i>🎯 Бот будет присылать вам уведомления о проектах в выбранных категориях</i>",
+        reply_markup={"inline_keyboard": buttons},
+    )
+
+
+def _complete_onboarding(chat_id: int):
+    """Завершает онбординг и переводит в главное меню"""
+    set_onboarding_step(chat_id, 0)
+    
+    # Активируем PRO триал на 7 дней
+    start_trial(chat_id, days=7)
+    
+    # Если пользователь пришел по реферальной ссылке, добавляем бонус
+    users = load_users()
+    referrer_id = users.get(str(chat_id), {}).get("referrer_id")
+    if referrer_id:
+        add_referral_bonus(referrer_id, days=7)
+        send_message(
+            referrer_id,
+            "🎉 <b>У вас новый реферал!</b>\n\n"
+            "🎁 Вы получили +7 дней подписки!\n"
+            "💵 Приглашайте друзей и получайте бонусы!",
+        )
+    
+    send_message(
+        chat_id,
+        f"🎉 <b>Настройка завершена!</b>\n\n"
+        f"🎁 Вам активирован <b>PRO на 7 дней</b> бесплатно!\n\n"
+        f"<b>Возможности PRO:</b>\n"
+        f"• ∞ Безлимит уведомлений\n"
+        f"• ∞ Все категории и фильтры\n"
+        f"• 📜 История за 30 дней\n"
+        f"• ⚡ Приоритетная доставка\n\n"
+        f"После окончания триала перейдете на Free тариф.\n"
+        f"💳 Продлить: /subscription",
+    )
+    
+    _send_main_menu(chat_id)
 
 
 def get_all_active_users() -> dict:
@@ -2241,9 +2379,74 @@ def _handle_update(update: dict):
         cb_data = cb.get("data", "")
         cb_id = cb["id"]
         
-        if cb_data.startswith("parent:"):
-            parent_id = cb_data[7:]
+        # === ONBOARDING HANDLERS ===
+        if cb_data.startswith("onboard_cat:"):
+            # Выбор категории на шаге 1
+            parent_id = cb_data[12:]
+            
+            # Открываем подкатегории для выбора
             _send_subcategories_menu(chat_id, parent_id)
+            _answer_callback(cb_id, "📂 Выберите подкатегории")
+        
+        elif cb_data == "onboard_skip":
+            # Пропуск шага 1 - переходим к шагу 2
+            set_onboarding_step(chat_id, 2)
+            _send_onboarding_step_2(chat_id)
+            _answer_callback(cb_id)
+        
+        elif cb_data.startswith("onboard_time:"):
+            # Выбор времени уведомлений на шаге 2
+            time_choice = cb_data[14:]
+            
+            if time_choice == "always":
+                # 24/7 - отключаем ограничение по времени
+                set_user_notification_hours(chat_id, enabled=False)
+            elif time_choice == "work":
+                # Рабочее время 09:00-18:00
+                set_user_notification_hours(chat_id, enabled=True, start=9, end=18)
+            elif time_choice == "evening":
+                # Вечер 18:00-23:00
+                set_user_notification_hours(chat_id, enabled=True, start=18, end=23)
+            # skip - оставляем как есть (по умолчанию 24/7)
+            
+            set_onboarding_step(chat_id, 3)
+            _send_onboarding_step_3(chat_id)
+            _answer_callback(cb_id, "✅ Время настроено")
+        
+        elif cb_data == "onboard_finish":
+            # Завершение онбординга
+            _complete_onboarding(chat_id)
+            _answer_callback(cb_id, "🎉 Добро пожаловать!")
+        
+        elif cb_data == "onboard_customize":
+            # Точная настройка - переходим в главное меню
+            set_onboarding_step(chat_id, 0)
+            _send_main_menu(chat_id)
+            send_message(
+                chat_id,
+                "⚙️ <b>Точная настройка</b>\n\n"
+                "Используйте меню для детальной настройки:\n"
+                "• 📂 Категории — выбор категорий и фильтров\n"
+                "• ⚙️ Настройки — время уведомлений\n"
+                "• 💎 Подписка — управление тарифом",
+            )
+            _answer_callback(cb_id)
+        
+        # === REGULAR CALLBACK HANDLERS ===
+        elif cb_data.startswith("parent:"):
+            parent_id = cb_data[7:]
+            
+            # Проверяем, находимся ли в онбординге
+            onboard_step = get_onboarding_step(chat_id)
+            if onboard_step == 1:
+                # В онбординге - открываем подкатегории и остаёмся на шаге 1
+                _send_subcategories_menu(chat_id, parent_id)
+                send_message(
+                    chat_id,
+                    "💡 <i>Выберите нужные подкатегории и нажмите 'Готово'</i>",
+                )
+            else:
+                _send_subcategories_menu(chat_id, parent_id)
             _answer_callback(cb_id)
         
         elif cb_data.startswith("sub:"):
@@ -2359,8 +2562,16 @@ def _handle_update(update: dict):
                 _answer_callback(cb_id)
                 return
             
-            _show_current_selection(chat_id)
-            _answer_callback(cb_id, "✅ Сохранено!")
+            # Проверяем, находимся ли в онбординге
+            onboard_step = get_onboarding_step(chat_id)
+            if onboard_step == 1:
+                # Переходим к шагу 2
+                set_onboarding_step(chat_id, 2)
+                _send_onboarding_step_2(chat_id)
+                _answer_callback(cb_id, "✅ Категории выбраны!")
+            else:
+                _show_current_selection(chat_id)
+                _answer_callback(cb_id, "✅ Сохранено!")
         
         elif cb_data == "show_selection":
             _show_current_selection(chat_id)
@@ -3388,7 +3599,16 @@ def _handle_update(update: dict):
             
             is_new = register_user(chat_id, referrer_id)
             if is_new:
-                start_trial(chat_id, days=7)
+                # Сохраняем referrer_id для использования в онбординге
+                if referrer_id:
+                    with _lock:
+                        users = load_users()
+                        if str(chat_id) in users:
+                            users[str(chat_id)]["referrer_id"] = referrer_id
+                            save_users(users)
+                
+                # Запускаем онбординг
+                _send_onboarding_step_1(chat_id)
                 
                 if referrer_id:
                     add_referral_bonus(referrer_id, days=7)
@@ -3398,31 +3618,19 @@ def _handle_update(update: dict):
                         "🎁 Вы получили +7 дней подписки!\n"
                         "💵 Приглашайте друзей и получайте бонусы!",
                     )
-                    send_message(
-                        chat_id,
-                        "👋 <b>Добро пожаловать в Kwork Bot!</b>\n\n"
-                        "🔍 Я помогу вам отслеживать новые проекты на kwork.ru\n\n"
-                        "<b>Как это работает:</b>\n"
-                        "1️⃣ Выберите интересующие категории\n"
-                        "2️⃣ Настройте фильтры для точного поиска\n"
-                        "3️⃣ Получайте уведомления о новых проектах\n\n"
-                        "🎁 <b>Бонус:</b> 14 дней PRO бесплатно!\n"
-                        "👆 Вы приглашенный пользователь — получаете +7 дней!",
-                    )
-                else:
-                    send_message(
-                        chat_id,
-                        "👋 <b>Добро пожаловать в Kwork Bot!</b>\n\n"
-                        "🔍 Я помогу вам отслеживать новые проекты на kwork.ru\n\n"
-                        "<b>Как это работает:</b>\n"
-                        "1️⃣ Выберите интересующие категории\n"
-                        "2️⃣ Настройте фильтры для точного поиска\n"
-                        "3️⃣ Получайте уведомления о новых проектах\n\n"
-                        "🎁 <b>Бонус:</b> 7 дней PRO бесплатно!",
-                    )
-                _send_main_menu(chat_id)
             else:
-                _send_main_menu(chat_id)
+                # Проверяем, завершен ли онбординг
+                onboard_step = get_onboarding_step(chat_id)
+                if onboard_step > 0:
+                    # Продолжаем онбординг с текущего шага
+                    if onboard_step == 1:
+                        _send_onboarding_step_1(chat_id)
+                    elif onboard_step == 2:
+                        _send_onboarding_step_2(chat_id)
+                    elif onboard_step == 3:
+                        _send_onboarding_step_3(chat_id)
+                else:
+                    _send_main_menu(chat_id)
         
         elif text == "/menu":
             _send_main_menu(chat_id)
