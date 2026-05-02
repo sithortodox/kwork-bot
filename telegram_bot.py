@@ -1253,11 +1253,15 @@ def _send_plans_comparison(chat_id: int):
 
 
 def _send_subcategories_menu(chat_id: int, parent_id: str):
+    from category_stats import get_category_activity_24h
+    
     if parent_id not in CATEGORIES_TREE:
         return
     
     user_cats = get_user_categories(chat_id)
     parent_data = CATEGORIES_TREE[parent_id]
+    
+    activity_24h = get_category_activity_24h()
     
     buttons = []
     for sub_id, sub_data in parent_data["subcategories"].items():
@@ -1273,9 +1277,13 @@ def _send_subcategories_menu(chat_id: int, parent_id: str):
         else:
             marker = "○"
         
+        # Показываем активность для подкатегории
+        sub_activity = activity_24h.get(sub_id, 0)
+        activity_text = f" 🔥{sub_activity}" if sub_activity > 0 else ""
+        
         icon = "⚙️" if has_filters else ""
         buttons.append([{
-            "text": f"{marker} {sub_data['name']} {icon}",
+            "text": f"{marker} {sub_data['name']}{activity_text} {icon}",
             "callback_data": f"sub:{sub_id}"
         }])
     
@@ -1289,6 +1297,7 @@ def _send_subcategories_menu(chat_id: int, parent_id: str):
         chat_id,
         f"📁 <b>{parent_data['name']}</b>\n\n"
         "⚙️ — доступны фильтры для уточнения\n"
+        "🔥 — проектов за 24 часа\n"
         "○ — не выбрано | ☑️ — выбраны фильтры | ✅ — выбрано полностью",
         reply_markup={"inline_keyboard": buttons},
     )
@@ -1890,6 +1899,8 @@ def _send_main_menu(chat_id: int):
 
 
 def _send_main_categories_menu(chat_id: int):
+    from category_stats import get_parent_category_activity, get_total_projects_24h, get_top_active_categories, ALL_SUBCATEGORIES
+    
     user_cats = get_user_categories(chat_id)
     buttons = []
     
@@ -1899,10 +1910,38 @@ def _send_main_categories_menu(chat_id: int):
         icon = "✅" if selected > 0 else "○"
         count_text = f" ({selected}/{sub_count})" if selected > 0 else ""
         
+        # Получаем активность для этой категории
+        sub_ids = list(parent_data.get("subcategories", {}).keys())
+        activity = get_parent_category_activity(parent_id, sub_ids)
+        activity_text = f" 🔥{activity}" if activity > 0 else ""
+        
         buttons.append([{
-            "text": f"{icon} {parent_data['name']}{count_text}",
+            "text": f"{icon} {parent_data['name']}{count_text}{activity_text}",
             "callback_data": f"parent:{parent_id}"
         }])
+    
+    total_24h = get_total_projects_24h()
+    top_active = get_top_active_categories(3)
+    
+    # Формируем текст топа активных
+    top_text = ""
+    if top_active:
+        top_names = []
+        for item in top_active:
+            cat_id = item["id"]
+            if cat_id in ALL_SUBCATEGORIES:
+                cat_name = ALL_SUBCATEGORIES[cat_id]["name"]
+            else:
+                # Пробуем найти в parent категориях
+                for pid, pdata in CATEGORIES_TREE.items():
+                    if pid == cat_id:
+                        cat_name = pdata["name"]
+                        break
+                else:
+                    cat_name = cat_id
+            top_names.append(f"• {cat_name}: {item['count']}")
+        
+        top_text = "\n\n🔥 <b>Топ активных сегодня:</b>\n" + "\n".join(top_names)
     
     buttons.append([{"text": "📋 Показать мой выбор", "callback_data": "show_selection"}])
     buttons.append([{"text": "🗑 Очистить всё", "callback_data": "clear_all"}])
@@ -1910,10 +1949,11 @@ def _send_main_categories_menu(chat_id: int):
     
     send_message(
         chat_id,
-        "📂 <b>Выберите категории</b>\n\n"
-        "○ — не выбрано\n"
-        "✅ — выбрано\n\n"
-        "Нажмите на категорию для выбора подкатегорий:",
+        f"📂 <b>Выберите категории</b>\n\n"
+        f"○ — не выбрано\n"
+        f"✅ — выбрано\n"
+        f"🔥 — проектов за 24 часа\n\n"
+        f"📊 Всего за 24ч: {total_24h} проектов{top_text}",
         reply_markup={"inline_keyboard": buttons},
     )
 

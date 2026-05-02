@@ -20,6 +20,7 @@ from telegram_bot import (
 )
 
 from analytics import track_event
+from category_stats import record_category_activity
 
 try:
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -144,6 +145,9 @@ async def _fetch_and_notify_impl(api: Kwork, seen: set) -> set:
         if not detected_cats:
             seen.add(str(p.id))
             continue
+        
+        # Записываем активность категорий для статистики
+        record_category_activity(detected_cats)
         
         project_data = {
             "id": str(p.id),
