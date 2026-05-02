@@ -1,0 +1,8 @@
+.env
+seen_projects.json
+__pycache__/
+*.pyc
+data/
+cookies.json
+*.pem
+secret_key.txt

@@ -1,0 +1,8 @@
+kwork==0.2.0
+python-dotenv==1.0.1
+requests==2.32.3
+flask==3.0.0
+sendgrid==6.11.0
+pytz==2024.1
+apscheduler==3.10.4
+tenacity==8.2.3
