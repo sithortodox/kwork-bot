@@ -304,40 +304,54 @@ async def main():
         log.info("Logged in as %s", me.username)
         
         while True:
-            now_msk = datetime.now(MOSCOW_TZ)
-            hour_msk = now_msk.hour
-            
-            should_check = False
-            
-            if is_check_requested():
-                should_check = True
-                clear_check_requested()
-                log.info("On-demand check triggered")
-            elif WORK_START <= hour_msk < WORK_END:
-                should_check = True
-            
-            if should_check:
-                try:
-                    new_ids = await fetch_and_notify(api, seen)
-                    if new_ids:
-                        seen.update(new_ids)
-                        save_seen(seen)
-                        log.info("Added %d new projects", len(new_ids))
-                    else:
-                        log.info("No new projects")
-                except Exception as e:
-                    log.error("Error in check: %s", e)
-            else:
-                log.info("Outside work hours (07:00-23:00 MSK), current MSK time: %s", now_msk.strftime("%H:%M"))
-            
-            poll_interval = get_interval()
-            log.info("Sleeping %d seconds ...", poll_interval)
-            
-            for _ in range(poll_interval // 5):
-                await asyncio.sleep(5)
+            try:
+                now_msk = datetime.now(MOSCOW_TZ)
+                hour_msk = now_msk.hour
+                
+                should_check = False
+                
                 if is_check_requested():
-                    log.info("On-demand check detected during sleep")
-                    break
+                    should_check = True
+                    clear_check_requested()
+                    log.info("On-demand check triggered")
+                elif WORK_START <= hour_msk < WORK_END:
+                    should_check = True
+                
+                if should_check:
+                    try:
+                        new_ids = await fetch_and_notify(api, seen)
+                        if new_ids:
+                            seen.update(new_ids)
+                            save_seen(seen)
+                            log.info("Added %d new projects", len(new_ids))
+                        else:
+                            log.info("No new projects")
+                    except Exception as e:
+                        log.error("Error in check: %s", e, exc_info=True)
+                else:
+                    log.info("Outside work hours (07:00-23:00 MSK), current MSK time: %s", now_msk.strftime("%H:%M"))
+                
+                poll_interval = get_interval()
+                log.info("Sleeping %d seconds ...", poll_interval)
+                
+                try:
+                    sleep_iterations = poll_interval // 5
+                    for i in range(sleep_iterations):
+                        await asyncio.sleep(5)
+                        log.debug("Sleep iteration %d/%d", i+1, sleep_iterations)
+                        if is_check_requested():
+                            log.info("On-demand check detected during sleep")
+                            break
+                    log.info("Sleep completed, waking up")
+                except asyncio.CancelledError:
+                    log.warning("Sleep was cancelled")
+                    raise
+                except Exception as e:
+                    log.error("Error during sleep: %s", e)
+            except Exception as e:
+                log.error("Critical error in main loop: %s", e, exc_info=True)
+                log.info("Restarting main loop in 60 seconds...")
+                await asyncio.sleep(60)
 
 
 def run_webhook_in_thread():
