@@ -29,6 +29,8 @@ SENT_PROJECTS_FILE = os.path.join(DATA_DIR, "sent_projects.json")
 SUBSCRIPTIONS_FILE = os.path.join(DATA_DIR, "subscriptions.json")
 HISTORY_FILE = os.path.join(DATA_DIR, "user_history.json")
 FAVORITES_FILE = os.path.join(DATA_DIR, "favorites.json")
+CONTACTS_FILE = os.path.join(DATA_DIR, "contacts.json")
+FAQ_CUSTOM_FILE = os.path.join(DATA_DIR, "faq_custom.json")
 
 PLANS = {
     "free": {
@@ -432,6 +434,31 @@ def load_users() -> dict:
 
 def save_users(users: dict):
     _save_json(USERS_FILE, users)
+
+
+def load_contacts() -> dict:
+    default_contacts = {
+        "support_username": "@kwork_bot_support",
+        "support_email": "support@kwork-bot.ru",
+        "work_hours": "Пн-Пт: 09:00-18:00 МСК",
+        "weekend": "Сб-Вс: выходные",
+        "response_time_free": "до 24 часов",
+        "response_time_basic": "до 12 часов",
+        "response_time_pro": "до 4 часов",
+    }
+    return _load_json(CONTACTS_FILE, default_contacts)
+
+
+def save_contacts(contacts: dict):
+    _save_json(CONTACTS_FILE, contacts)
+
+
+def load_faq_custom() -> dict:
+    return _load_json(FAQ_CUSTOM_FILE, {})
+
+
+def save_faq_custom(faq: dict):
+    _save_json(FAQ_CUSTOM_FILE, faq)
 
 
 def register_user(chat_id: int, referrer_id: int = None) -> bool:
@@ -1542,9 +1569,19 @@ def _send_faq_menu(chat_id: int):
     from faq import FAQ, FAQ_ORDER
     
     buttons = []
+    
     for key in FAQ_ORDER:
         q = FAQ[key]
         buttons.append([{"text": q["question"], "callback_data": f"faq_{key}"}])
+    
+    custom_faq = load_faq_custom()
+    if custom_faq:
+        for key in sorted(custom_faq.keys(), key=lambda x: custom_faq[x].get("order", 999)):
+            q = custom_faq[key]
+            buttons.append([{"text": f"📌 {q['question']}", "callback_data": f"faq_custom_{key}"}])
+    
+    if chat_id == ADMIN_CHAT_ID:
+        buttons.append([{"text": "⚙️ Управление FAQ", "callback_data": "admin_faq_menu"}])
     
     buttons.append([{"text": "🏠 Главное меню", "callback_data": "back_to_main_menu"}])
     
@@ -1556,13 +1593,22 @@ def _send_faq_menu(chat_id: int):
     )
 
 
-def _send_faq_answer(chat_id: int, faq_key: str):
-    from faq import FAQ
+def _send_faq_answer(chat_id: int, faq_key: str, is_custom: bool = False):
+    from faq import FAQ, get_support_answer
     
-    if faq_key not in FAQ:
-        return
-    
-    q = FAQ[faq_key]
+    if is_custom:
+        custom_faq = load_faq_custom()
+        if faq_key not in custom_faq:
+            return
+        answer = custom_faq[faq_key]["answer"]
+    else:
+        if faq_key not in FAQ:
+            return
+        
+        if faq_key == "support":
+            answer = get_support_answer()
+        else:
+            answer = FAQ[faq_key]["answer"]
     
     buttons = [
         [{"text": "← Назад к FAQ", "callback_data": "faq_menu"}],
@@ -1571,12 +1617,14 @@ def _send_faq_answer(chat_id: int, faq_key: str):
     
     send_message(
         chat_id,
-        q["answer"],
+        answer,
         reply_markup={"inline_keyboard": buttons},
     )
 
 
 def _send_help(chat_id: int):
+    contacts = load_contacts()
+    
     send_message(
         chat_id,
         "📖 <b>Инструкция по использованию</b>\n\n"
@@ -1607,9 +1655,9 @@ def _send_help(chat_id: int):
         "• Pro: Безлимит, 30 дней истории — 799₽/мес\n\n"
         "<b>⏰ Время работы:</b>\n"
         "Бот проверяет проекты с 07:00 до 23:00 по Москве\n\n"
-        "<b>💬 Поддержка:</b>\n"
-        "• Telegram: @kwork_bot_support\n"
-        "• Email: support@kwork-bot.ru\n\n"
+        f"<b>💬 Поддержка:</b>\n"
+        f"• Telegram: {contacts['support_username']}\n"
+        f"• Email: {contacts['support_email']}\n\n"
         "━━━━━━━━━━━━━━━━━━\n"
         "✅ Бот готов к работе!",
     )
@@ -1901,6 +1949,7 @@ def _send_admin_menu(chat_id: int):
             [{"text": "📊 Статистика"}, {"text": "📈 Аналитика"}],
             [{"text": "👥 Пользователи"}, {"text": "📨 Рассылка"}],
             [{"text": "🎫 Промокоды"}, {"text": "🎁 Выдать подписку"}],
+            [{"text": "❓ FAQ"}, {"text": "📞 Контакты"}],
             [{"text": "🔍 Проверить проекты"}, {"text": "🏠 Главное меню"}],
         ],
         "resize_keyboard": True,
@@ -1926,6 +1975,99 @@ def _send_admin_menu(chat_id: int):
         f"💵 <b>Итого: {total_revenue}₽</b>",
         reply_markup=keyboard,
     )
+
+
+def _send_admin_faq_menu(chat_id: int):
+    if chat_id != ADMIN_CHAT_ID:
+        return
+    
+    custom_faq = load_faq_custom()
+    
+    buttons = []
+    buttons.append([{"text": "➕ Добавить вопрос", "callback_data": "admin_faq_add"}])
+    
+    if custom_faq:
+        for key, item in custom_faq.items():
+            buttons.append([{
+                "text": f"✏️ {item['question'][:30]}...",
+                "callback_data": f"admin_faq_edit_{key}"
+            }])
+    
+    buttons.append([{"text": "← Назад", "callback_data": "faq_menu"}])
+    
+    count = len(custom_faq)
+    send_message(
+        chat_id,
+        f"⚙️ <b>Управление FAQ</b>\n\n"
+        f"📝 Добавлено вопросов: {count}\n\n"
+        "Для редактирования нажмите на вопрос:",
+        reply_markup={"inline_keyboard": buttons},
+    )
+
+
+def _send_admin_contacts_menu(chat_id: int):
+    if chat_id != ADMIN_CHAT_ID:
+        return
+    
+    contacts = load_contacts()
+    
+    buttons = [
+        [{"text": "✏️ Редактировать контакты", "callback_data": "admin_contacts_edit"}],
+        [{"text": "← Назад в FAQ", "callback_data": "faq_menu"}],
+    ]
+    
+    send_message(
+        chat_id,
+        f"📞 <b>Контакты поддержки</b>\n\n"
+        f"💬 Telegram: {contacts['support_username']}\n"
+        f"📧 Email: {contacts['support_email']}\n"
+        f"🕐 Время работы: {contacts['work_hours']}\n"
+        f"🛑 Выходные: {contacts['weekend']}\n\n"
+        f"<b>Время ответа:</b>\n"
+        f"🆓 Free: {contacts['response_time_free']}\n"
+        f"💼 Basic: {contacts['response_time_basic']}\n"
+        f"⭐ Pro: {contacts['response_time_pro']}",
+        reply_markup={"inline_keyboard": buttons},
+    )
+
+
+def _send_admin_faq_edit(chat_id: int, faq_key: str):
+    if chat_id != ADMIN_CHAT_ID:
+        return
+    
+    custom_faq = load_faq_custom()
+    
+    if faq_key not in custom_faq:
+        send_message(chat_id, "❌ Вопрос не найден")
+        return
+    
+    item = custom_faq[faq_key]
+    
+    buttons = [
+        [{"text": "✏️ Изменить ответ", "callback_data": f"admin_faq_edit_answer_{faq_key}"}],
+        [{"text": "🗑 Удалить вопрос", "callback_data": f"admin_faq_delete_{faq_key}"}],
+        [{"text": "← Назад", "callback_data": "admin_faq_menu"}],
+    ]
+    
+    send_message(
+        chat_id,
+        f"✏️ <b>Редактирование вопроса</b>\n\n"
+        f"<b>Вопрос:</b>\n{item['question']}\n\n"
+        f"<b>Ответ:</b>\n{item['answer'][:500]}{'...' if len(item['answer']) > 500 else ''}",
+        reply_markup={"inline_keyboard": buttons},
+    )
+
+
+def _delete_faq_item(chat_id: int, faq_key: str):
+    if chat_id != ADMIN_CHAT_ID:
+        return
+    
+    custom_faq = load_faq_custom()
+    
+    if faq_key in custom_faq:
+        del custom_faq[faq_key]
+        save_faq_custom(custom_faq)
+        _send_admin_faq_menu(chat_id)
 
 
 def _send_admin_stats(chat_id: int):
@@ -2364,9 +2506,79 @@ def _handle_update(update: dict):
             _send_faq_menu(chat_id)
             _answer_callback(cb_id)
         
+        elif cb_data.startswith("faq_custom_"):
+            faq_key = cb_data[11:]
+            _send_faq_answer(chat_id, faq_key, is_custom=True)
+            _answer_callback(cb_id)
+        
         elif cb_data.startswith("faq_"):
             faq_key = cb_data[4:]
             _send_faq_answer(chat_id, faq_key)
+            _answer_callback(cb_id)
+        
+        elif cb_data == "admin_faq_menu":
+            _send_admin_faq_menu(chat_id)
+            _answer_callback(cb_id)
+        
+        elif cb_data == "admin_contacts_menu":
+            _send_admin_contacts_menu(chat_id)
+            _answer_callback(cb_id)
+        
+        elif cb_data == "admin_faq_add":
+            send_message(
+                chat_id,
+                "➕ <b>Добавление вопроса FAQ</b>\n\n"
+                "Формат:\n"
+                "<code>ключ|вопрос</code>\n\n"
+                "Пример:\n"
+                "<code>delivery|Как быстро приходит уведомление?</code>\n\n"
+                "Для отмены отправьте /cancel",
+            )
+            _set_admin_state(chat_id, "faq_add")
+            _answer_callback(cb_id)
+        
+        elif cb_data.startswith("admin_faq_edit_"):
+            faq_key = cb_data[15:]
+            _send_admin_faq_edit(chat_id, faq_key)
+            _answer_callback(cb_id)
+        
+        elif cb_data.startswith("admin_faq_delete_"):
+            faq_key = cb_data[18:]
+            _delete_faq_item(chat_id, faq_key)
+            _answer_callback(cb_id, "✅ Вопрос удален")
+        
+        elif cb_data.startswith("admin_faq_edit_answer_"):
+            faq_key = cb_data[22:]
+            send_message(
+                chat_id,
+                f"✏️ <b>Редактирование ответа</b>\n\n"
+                f"Введите новый ответ для вопроса.\n"
+                f"Можно использовать HTML-разметку.\n\n"
+                f"Для отмены отправьте /cancel",
+            )
+            _set_admin_state(chat_id, f"faq_edit_answer_{faq_key}")
+            _answer_callback(cb_id)
+        
+        elif cb_data == "admin_contacts_edit":
+            contacts = load_contacts()
+            send_message(
+                chat_id,
+                "📞 <b>Редактирование контактов</b>\n\n"
+                "Формат:\n"
+                "<code>поле|значение</code>\n\n"
+                "<b>Поля:</b>\n"
+                f"• support_username (сейчас: {contacts['support_username']})\n"
+                f"• support_email (сейчас: {contacts['support_email']})\n"
+                f"• work_hours (сейчас: {contacts['work_hours']})\n"
+                f"• weekend (сейчас: {contacts['weekend']})\n"
+                f"• response_time_free (сейчас: {contacts['response_time_free']})\n"
+                f"• response_time_basic (сейчас: {contacts['response_time_basic']})\n"
+                f"• response_time_pro (сейчас: {contacts['response_time_pro']})\n\n"
+                "Пример:\n"
+                "<code>support_username|@new_support_bot</code>\n\n"
+                "Для отмены отправьте /cancel",
+            )
+            _set_admin_state(chat_id, "contacts_edit")
             _answer_callback(cb_id)
         
         elif cb_data.startswith("history_"):
@@ -2954,6 +3166,101 @@ def _handle_update(update: dict):
                 except Exception as e:
                     send_message(chat_id, f"❌ Ошибка: {e}")
                 return
+            
+            if admin_state == "faq_add":
+                try:
+                    parts = text.split("|", 1)
+                    if len(parts) != 2:
+                        send_message(chat_id, "❌ Неверный формат. Используйте: ключ|вопрос")
+                        return
+                    
+                    faq_key = parts[0].strip().lower().replace(" ", "_")
+                    question = parts[1].strip()
+                    
+                    custom_faq = load_faq_custom()
+                    custom_faq[faq_key] = {
+                        "question": question,
+                        "answer": "",
+                        "order": len(custom_faq) + 1,
+                    }
+                    save_faq_custom(custom_faq)
+                    
+                    _clear_admin_state(chat_id)
+                    _set_admin_state(chat_id, f"faq_edit_answer_{faq_key}")
+                    send_message(
+                        chat_id,
+                        f"✅ Вопрос создан: <b>{question}</b>\n\n"
+                        f"Теперь введите ответ (можно использовать HTML-разметку):"
+                    )
+                except Exception as e:
+                    send_message(chat_id, f"❌ Ошибка: {e}")
+                return
+            
+            if admin_state.startswith("faq_edit_answer_"):
+                try:
+                    faq_key = admin_state[16:]
+                    
+                    custom_faq = load_faq_custom()
+                    if faq_key not in custom_faq:
+                        send_message(chat_id, "❌ Вопрос не найден")
+                        _clear_admin_state(chat_id)
+                        return
+                    
+                    custom_faq[faq_key]["answer"] = text
+                    save_faq_custom(custom_faq)
+                    
+                    _clear_admin_state(chat_id)
+                    send_message(
+                        chat_id,
+                        f"✅ Ответ сохранен!\n\n"
+                        f"<b>Вопрос:</b> {custom_faq[faq_key]['question']}\n\n"
+                        f"<b>Ответ:</b>\n{text[:500]}{'...' if len(text) > 500 else ''}"
+                    )
+                    _send_admin_faq_menu(chat_id)
+                except Exception as e:
+                    send_message(chat_id, f"❌ Ошибка: {e}")
+                return
+            
+            if admin_state == "contacts_edit":
+                try:
+                    parts = text.split("|", 1)
+                    if len(parts) != 2:
+                        send_message(chat_id, "❌ Неверный формат. Используйте: поле|значение")
+                        return
+                    
+                    field = parts[0].strip().lower()
+                    value = parts[1].strip()
+                    
+                    contacts = load_contacts()
+                    
+                    valid_fields = [
+                        "support_username", "support_email", "work_hours",
+                        "weekend", "response_time_free", "response_time_basic",
+                        "response_time_pro"
+                    ]
+                    
+                    if field not in valid_fields:
+                        send_message(
+                            chat_id,
+                            f"❌ Неверное поле.\n\n"
+                            f"Доступные поля:\n"
+                            f"• {chr(10).join(valid_fields)}"
+                        )
+                        return
+                    
+                    contacts[field] = value
+                    save_contacts(contacts)
+                    
+                    _clear_admin_state(chat_id)
+                    send_message(
+                        chat_id,
+                        f"✅ Контакт обновлен!\n\n"
+                        f"<b>{field}:</b> {value}"
+                    )
+                    _send_admin_contacts_menu(chat_id)
+                except Exception as e:
+                    send_message(chat_id, f"❌ Ошибка: {e}")
+                return
         
         user_state = _get_user_state(chat_id)
         if user_state:
@@ -3343,6 +3650,12 @@ def _handle_update(update: dict):
         
         elif text == "📈 Аналитика" and chat_id == ADMIN_CHAT_ID:
             _send_analytics_menu(chat_id)
+        
+        elif text == "❓ FAQ" and chat_id == ADMIN_CHAT_ID:
+            _send_admin_faq_menu(chat_id)
+        
+        elif text == "📞 Контакты" and chat_id == ADMIN_CHAT_ID:
+            _send_admin_contacts_menu(chat_id)
         
         elif text == "🔍 Проверить проекты" and chat_id == ADMIN_CHAT_ID:
             _check_requested.set()

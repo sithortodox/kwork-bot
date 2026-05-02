@@ -123,15 +123,15 @@ FAQ = {
         "question": "Как связаться с поддержкой?",
         "answer": (
             "💬 <b>Техподдержка:</b>\n\n"
-            "<b>Telegram:</b> @kwork_bot_support\n\n"
+            "<b>Telegram:</b> {support_username}\n\n"
             "<b>Время работы:</b>\n"
-            "Пн-Пт: 09:00-18:00 МСК\n"
-            "Сб-Вс: выходные\n\n"
+            "{work_hours}\n"
+            "{weekend}\n\n"
             "<b>Среднее время ответа:</b>\n"
-            "• Free: до 24 часов\n"
-            "• Basic: до 12 часов\n"
-            "• Pro: до 4 часов\n\n"
-            "📧 <b>Email:</b> support@kwork-bot.ru\n\n"
+            "• Free: {response_time_free}\n"
+            "• Basic: {response_time_basic}\n"
+            "• Pro: {response_time_pro}\n\n"
+            "📧 <b>Email:</b> {support_email}\n\n"
             "🆘 <b>Для быстрого решения укажите:</b>\n"
             "• Ваш ID (можно узнать у @userinfobot)\n"
             "• Описание проблемы\n"
@@ -141,3 +141,37 @@ FAQ = {
 }
 
 FAQ_ORDER = ["categories", "filters", "payment", "cancel", "limits", "referral", "notifications", "support"]
+
+
+def get_support_answer():
+    try:
+        import json
+        import os
+        data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+        contacts_file = os.path.join(data_dir, "contacts.json")
+        
+        if os.path.exists(contacts_file):
+            with open(contacts_file, "r", encoding="utf-8") as f:
+                contacts = json.load(f)
+        else:
+            contacts = {
+                "support_username": "@kwork_bot_support",
+                "support_email": "support@kwork-bot.ru",
+                "work_hours": "Пн-Пт: 09:00-18:00 МСК",
+                "weekend": "Сб-Вс: выходные",
+                "response_time_free": "до 24 часов",
+                "response_time_basic": "до 12 часов",
+                "response_time_pro": "до 4 часов",
+            }
+        
+        return FAQ["support"]["answer"].format(**contacts)
+    except Exception:
+        return FAQ["support"]["answer"].format(
+            support_username="@kwork_bot_support",
+            support_email="support@kwork-bot.ru",
+            work_hours="Пн-Пт: 09:00-18:00 МСК",
+            weekend="Сб-Вс: выходные",
+            response_time_free="до 24 часов",
+            response_time_basic="до 12 часов",
+            response_time_pro="до 4 часов",
+        )
