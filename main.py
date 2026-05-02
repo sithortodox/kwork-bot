@@ -16,7 +16,7 @@ from telegram_bot import (
     start_bot, get_interval, is_check_requested, clear_check_requested,
     ALL_SUBCATEGORIES, can_receive_notification, increment_notifications_count,
     get_user_plan, add_project_to_history, is_user_in_notification_hours,
-    notify_admin,
+    notify_admin, get_user_min_budget,
 )
 
 from analytics import track_event
@@ -179,6 +179,20 @@ async def _fetch_and_notify_impl(api: Kwork, seen: set) -> set:
             if not is_user_in_notification_hours(chat_id):
                 log.debug("User %d: outside notification hours", chat_id)
                 continue
+            
+            # Проверка минимального бюджета
+            min_budget = get_user_min_budget(chat_id)
+            if min_budget > 0 and p.price:
+                # Если есть минимальный бюджет и у проекта есть цена
+                try:
+                    # Парсим цену (например, "5000 руб.")
+                    price_value = float(str(p.price).replace(" ", "").replace("руб.", "").replace("₽", ""))
+                    if price_value < min_budget:
+                        log.debug("User %d: price %d < min_budget %d", chat_id, price_value, min_budget)
+                        continue
+                except (ValueError, AttributeError):
+                    # Если не удалось распарсить цену - пропускаем проект
+                    pass
             
             matched_cats = [c for c in detected_cats if c in user_cats]
             if not matched_cats:

@@ -655,6 +655,26 @@ def get_user_notification_hours(chat_id: int) -> dict:
     }
 
 
+def get_user_min_budget(chat_id: int) -> int:
+    """Возвращает минимальный бюджет для уведомлений (0 = без ограничений)"""
+    users = load_users()
+    return users.get(str(chat_id), {}).get("min_budget", 0)
+
+
+def set_user_min_budget(chat_id: int, min_budget: int):
+    """Устанавливает минимальный бюджет для уведомлений"""
+    with _lock:
+        users = load_users()
+        if str(chat_id) not in users:
+            users[str(chat_id)] = {
+                "categories": [],
+                "enabled": True,
+                "registered_at": time.time(),
+            }
+        users[str(chat_id)]["min_budget"] = min_budget
+        save_users(users)
+
+
 def set_user_notification_hours(chat_id: int, enabled: bool = None, start: int = None, end: int = None, timezone: str = None):
     with _lock:
         users = load_users()
@@ -1543,6 +1563,7 @@ def _send_settings_menu(chat_id: int):
     user_email = user_data.get("email", "")
     
     hours = get_user_notification_hours(chat_id)
+    min_budget = get_user_min_budget(chat_id)
     
     current = get_interval() // 60
     buttons = []
@@ -1555,6 +1576,10 @@ def _send_settings_menu(chat_id: int):
             row = []
     if row:
         buttons.append(row)
+    
+    # Бюджет
+    budget_text = f"✅ от {min_budget} ₽" if min_budget > 0 else "❌ Любой"
+    buttons.append([{"text": f"💰 Мин. бюджет: {budget_text}", "callback_data": "min_budget_menu"}])
     
     buttons.append([{"text": "📧 Указать email", "callback_data": "set_email"}])
     
@@ -1570,10 +1595,55 @@ def _send_settings_menu(chat_id: int):
         chat_id,
         f"⚙️ <b>Настройки</b>\n\n"
         f"⏱ Период проверки: <b>{current} мин</b>\n"
+        f"💰 Мин. бюджет: {budget_text}\n"
         f"📧 Email: {email_status}\n"
         f"⏰ Время уведомлений: {hours_status}\n"
         f"🌍 Часовой пояс: {tz_short}\n\n"
         f"Выберите настройки:",
+        reply_markup={"inline_keyboard": buttons},
+    )
+
+
+def _send_min_budget_menu(chat_id: int):
+    """Меню настройки минимального бюджета"""
+    min_budget = get_user_min_budget(chat_id)
+    
+    buttons = []
+    
+    # Варианты бюджета
+    options = [
+        (0, "❌ Без ограничений"),
+        (500, "от 500 ₽"),
+        (1000, "от 1 000 ₽"),
+        (3000, "от 3 000 ₽"),
+        (5000, "от 5 000 ₽"),
+        (10000, "от 10 000 ₽"),
+        (20000, "от 20 000 ₽"),
+        (50000, "от 50 000 ₽"),
+    ]
+    
+    for budget, label in options:
+        marker = "✅ " if budget == min_budget else ""
+        buttons.append([{
+            "text": f"{marker}{label}",
+            "callback_data": f"set_budget:{budget}"
+        }])
+    
+    # Кастомный ввод
+    buttons.append([{"text": "✏️ Свое значение", "callback_data": "set_budget_custom"}])
+    buttons.append([{"text": "⬅️ Назад", "callback_data": "back_to_settings"}])
+    
+    current_text = f"{min_budget} ₽" if min_budget > 0 else "Любой"
+    
+    send_message(
+        chat_id,
+        f"💰 <b>Минимальный бюджет</b>\n\n"
+        f"Текущее значение: <b>{current_text}</b>\n\n"
+        f"<i>💡 Вы будете получать уведомления только о проектах с бюджетом не менее указанного</i>\n\n"
+        f"<b>Важно:</b>\n"
+        f"• Фильтр применяется ко всем категориям\n"
+        f"• Проекты без указания бюджета проходят фильтр\n"
+        f"• Можно изменить в любой момент",
         reply_markup={"inline_keyboard": buttons},
     )
 
@@ -2708,6 +2778,28 @@ def _handle_update(update: dict):
             _send_notification_hours_menu(chat_id)
             _answer_callback(cb_id)
         
+        elif cb_data == "min_budget_menu":
+            _send_min_budget_menu(chat_id)
+            _answer_callback(cb_id)
+        
+        elif cb_data.startswith("set_budget:"):
+            budget = int(cb_data.split(":")[1])
+            set_user_min_budget(chat_id, budget)
+            _send_min_budget_menu(chat_id)
+            budget_text = f"{budget} ₽" if budget > 0 else "Любой"
+            _answer_callback(cb_id, f"✅ Бюджет: {budget_text}")
+        
+        elif cb_data == "set_budget_custom":
+            send_message(
+                chat_id,
+                "✏️ <b>Установка минимального бюджета</b>\n\n"
+                "Введите сумму в рублях (минимум 100):\n\n"
+                "Пример: <code>15000</code>\n\n"
+                "Для отмены отправьте /cancel",
+            )
+            _set_user_state(chat_id, "set_budget_custom")
+            _answer_callback(cb_id)
+        
         elif cb_data.startswith("toggle_hours_"):
             enabled = int(cb_data.split("_")[2]) == 1
             set_user_notification_hours(chat_id, enabled=enabled)
@@ -3585,6 +3677,34 @@ def _handle_update(update: dict):
                         send_message(chat_id, "❌ Ошибка при удалении. Обратитесь в поддержку.")
                 else:
                     send_message(chat_id, "❌ Удаление отменено. Введите DELETE для подтверждения.")
+                return
+            
+            if user_state == "set_budget_custom":
+                _clear_user_state(chat_id)
+                
+                try:
+                    budget = int(text.strip())
+                    
+                    if budget < 100:
+                        send_message(chat_id, "❌ Минимальная сумма: 100 ₽")
+                        _send_min_budget_menu(chat_id)
+                        return
+                    
+                    if budget > 1000000:
+                        send_message(chat_id, "❌ Максимальная сумма: 1 000 000 ₽")
+                        _send_min_budget_menu(chat_id)
+                        return
+                    
+                    set_user_min_budget(chat_id, budget)
+                    send_message(
+                        chat_id,
+                        f"✅ <b>Минимальный бюджет установлен</b>\n\n"
+                        f"💰 Вы будете получать уведомления о проектах от {budget} ₽",
+                    )
+                    _send_min_budget_menu(chat_id)
+                except ValueError:
+                    send_message(chat_id, "❌ Неверный формат. Введите число, например: 5000")
+                    _send_min_budget_menu(chat_id)
                 return
         
         if text.startswith("/start"):
