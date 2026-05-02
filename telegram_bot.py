@@ -340,6 +340,195 @@ def get_user_notifications_count(chat_id: int) -> int:
     return user_sub.get("notifications_count", 0)
 
 
+def get_user_weekly_stats(chat_id: int) -> dict:
+    """Возвращает статистику активности за неделю"""
+    from collections import defaultdict
+    import json
+    
+    history_file = HISTORY_FILE
+    if not os.path.exists(history_file):
+        return {"daily": {}, "total": 0, "avg": 0, "top_categories": {}, "budget_stats": {}}
+    
+    try:
+        with open(history_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except:
+        return {"daily": {}, "total": 0, "avg": 0, "top_categories": {}, "budget_stats": {}}
+    
+    user_history = data.get(str(chat_id), [])
+    
+    # Считаем статистику за последние 7 дней
+    from datetime import datetime, timedelta
+    week_ago = datetime.now() - timedelta(days=7)
+    week_ago_ts = week_ago.timestamp()
+    
+    daily_counts = defaultdict(int)
+    category_counts = defaultdict(int)
+    budgets = []
+    
+    for item in user_history:
+        timestamp = item.get("timestamp", 0)
+        if timestamp < week_ago_ts:
+            continue
+        
+        # Подсчет по дням
+        day = datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d")
+        daily_counts[day] += 1
+        
+        # Подсчет по категориям
+        category = item.get("data", {}).get("category", "Другое")
+        category_counts[category] += 1
+        
+        # Подсчет бюджетов
+        price_str = item.get("data", {}).get("price", "")
+        if price_str:
+            try:
+                price = float(price_str.replace(" ", "").replace("руб.", "").replace("₽", ""))
+                budgets.append(price)
+            except:
+                pass
+    
+    total = sum(daily_counts.values())
+    avg = total / 7 if total > 0 else 0
+    
+    # Топ 5 категорий
+    top_cats = dict(sorted(category_counts.items(), key=lambda x: x[1], reverse=True)[:5])
+    
+    # Статистика бюджетов
+    budget_stats = {}
+    if budgets:
+        budget_stats = {
+            "min": min(budgets),
+            "max": max(budgets),
+            "avg": sum(budgets) / len(budgets),
+            "total": sum(budgets),
+        }
+    
+    return {
+        "daily": dict(daily_counts),
+        "total": total,
+        "avg": avg,
+        "top_categories": top_cats,
+        "budget_stats": budget_stats,
+    }
+
+
+def _create_ascii_bar(value: int, max_value: int, width: int = 10) -> str:
+    """Создает ASCII прогресс-бар"""
+    if max_value == 0:
+        return "░" * width
+    
+    filled = int((value / max_value) * width)
+    return "█" * filled + "░" * (width - filled)
+
+
+def _send_user_dashboard(chat_id: int):
+    """Отправляет визуальный дашборд статистики пользователя"""
+    user_cats = get_user_categories(chat_id)
+    plan = get_user_plan(chat_id)
+    notifications_today = get_user_notifications_count(chat_id)
+    min_budget = get_user_min_budget(chat_id)
+    weekly_stats = get_user_weekly_stats(chat_id)
+    
+    # === Основная информация ===
+    cat_count = len([c for c in user_cats if ":" not in c])
+    filter_count = len([c for c in user_cats if ":" in c])
+    
+    # === Лимиты ===
+    max_notifications = plan["notifications_per_day"]
+    if max_notifications == -1:
+        limit_text = "∞ Безлимит"
+        limit_bar = "██████████"
+    else:
+        remaining = max(0, max_notifications - notifications_today)
+        limit_text = f"{notifications_today}/{max_notifications}"
+        limit_bar = _create_ascii_bar(notifications_today, max_notifications, 10)
+    
+    # === Активность за неделю ===
+    from datetime import datetime, timedelta
+    
+    daily_text = ""
+    if weekly_stats["daily"]:
+        max_daily = max(weekly_stats["daily"].values()) if weekly_stats["daily"] else 1
+        
+        # Последние 7 дней в обратном порядке
+        for i in range(6, -1, -1):
+            day = (datetime.now() - timedelta(days=i)).strftime("%Y-%m-%d")
+            day_name = (datetime.now() - timedelta(days=i)).strftime("%a")
+            day_ru = {"Mon": "Пн", "Tue": "Вт", "Wed": "Ср", "Thu": "Чт", "Fri": "Пт", "Sat": "Сб", "Sun": "Вс"}.get(day_name, day_name)
+            
+            count = weekly_stats["daily"].get(day, 0)
+            bar = _create_ascii_bar(count, max_daily, 8)
+            daily_text += f"{day_ru} {bar} {count}\n"
+    
+    # === Топ категории ===
+    top_cats_text = ""
+    if weekly_stats["top_categories"]:
+        for cat, count in list(weekly_stats["top_categories"].items())[:3]:
+            cat_short = cat.split(" / ")[-1] if " / " in cat else cat
+            top_cats_text += f"• {cat_short}: {count}\n"
+    
+    # === Бюджеты ===
+    budget_text = ""
+    if weekly_stats["budget_stats"]:
+        stats = weekly_stats["budget_stats"]
+        budget_text = (
+            f"💰 <b>Бюджеты за неделю:</b>\n"
+            f"Min: {stats['min']:.0f}₽ | Max: {stats['max']:.0f}₽\n"
+            f"Средний: {stats['avg']:.0f}₽\n\n"
+        )
+    
+    # === Фильтр бюджета ===
+    budget_filter_text = f"от {min_budget}₽" if min_budget > 0 else "Любой"
+    
+    # === Формируем сообщение ===
+    message = (
+        f"📊 <b>Ваш дашборд</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n\n"
+        f"<b>👤 Профиль</b>\n"
+        f"Тариф: {plan['emoji']} {plan['name']}\n"
+        f"📂 Категорий: {cat_count} | ⚙️ Фильтров: {filter_count}\n"
+        f"💰 Мин. бюджет: {budget_filter_text}\n\n"
+        f"<b>📬 Сегодня</b>\n"
+        f"Уведомлений: {limit_text}\n"
+        f"{limit_bar}\n\n"
+    )
+    
+    if weekly_stats["total"] > 0:
+        message += (
+            f"<b>📈 Активность за неделю</b>\n"
+            f"Всего: {weekly_stats['total']} проектов\n"
+            f"В среднем: {weekly_stats['avg']:.1f}/день\n\n"
+            f"{daily_text}\n"
+        )
+        
+        if top_cats_text:
+            message += f"<b>🔥 Топ категории:</b>\n{top_cats_text}\n"
+        
+        if budget_text:
+            message += budget_text
+    else:
+        message += (
+            f"<b>📈 Активность</b>\n"
+            f"📭 Пока нет данных за неделю\n\n"
+        )
+    
+    # Добавляем советы
+    if notifications_today == 0 and cat_count > 0:
+        message += "💡 <i>Сегодня нет уведомлений. Возможно, стоит проверить категории?</i>\n"
+    elif max_notifications != -1 and notifications_today >= max_notifications * 0.8:
+        message += "💡 <i>Лимит почти исчерпан. Продлите подписку для безлимита!</i>\n"
+    
+    message += "\n💳 /subscription | 📂 /categories"
+    
+    buttons = [
+        [{"text": "📊 Обновить", "callback_data": "refresh_stats"}],
+        [{"text": "📂 Категории", "callback_data": "back_to_main"}, {"text": "💳 Подписка", "callback_data": "subscription_menu"}],
+    ]
+    
+    send_message(chat_id, message, reply_markup={"inline_keyboard": buttons})
+
+
 def increment_notifications_count(chat_id: int):
     with _lock:
         subs = load_subscriptions()
@@ -869,12 +1058,14 @@ def add_project_to_history(chat_id: int, project_id: str, project: dict):
         
         history[str(chat_id)].append({
             "project_id": project_id,
-            "title": project.get("title", ""),
-            "price": project.get("price", ""),
-            "description": project.get("description", "")[:300],
-            "url": project.get("url", ""),
-            "category": project.get("category", ""),
             "timestamp": time.time(),
+            "data": {
+                "title": project.get("title", ""),
+                "price": project.get("price", ""),
+                "description": project.get("description", "")[:300],
+                "url": project.get("url", ""),
+                "category": project.get("category", ""),
+            },
         })
         
         max_projects = 100
@@ -904,8 +1095,8 @@ def get_user_history(chat_id: int, page: int = 0, search: str = "") -> list:
         search_lower = search.lower()
         user_projects = [
             p for p in user_projects
-            if search_lower in p.get("title", "").lower()
-            or search_lower in p.get("description", "").lower()
+            if search_lower in (p.get("data", {}).get("title", "") or p.get("title", "")).lower()
+            or search_lower in (p.get("data", {}).get("description", "") or p.get("description", "")).lower()
         ]
     
     user_projects.sort(key=lambda x: x.get("timestamp", 0), reverse=True)
@@ -937,8 +1128,8 @@ def count_user_history(chat_id: int, search: str = "") -> int:
         search_lower = search.lower()
         user_projects = [
             p for p in user_projects
-            if search_lower in p.get("title", "").lower()
-            or search_lower in p.get("description", "").lower()
+            if search_lower in (p.get("data", {}).get("title", "") or p.get("title", "")).lower()
+            or search_lower in (p.get("data", {}).get("description", "") or p.get("description", "")).lower()
         ]
     
     return len(user_projects)
@@ -972,12 +1163,13 @@ def export_user_history(chat_id: int, format: str = "json") -> str:
         writer = csv.writer(output)
         writer.writerow(["ID", "Title", "Price", "Category", "URL", "Date"])
         for p in user_projects:
+            p_data = p.get("data", {})
             writer.writerow([
                 p.get("project_id", ""),
-                p.get("title", ""),
-                p.get("price", ""),
-                p.get("category", ""),
-                p.get("url", ""),
+                p_data.get("title") or p.get("title", ""),
+                p_data.get("price") or p.get("price", ""),
+                p_data.get("category") or p.get("category", ""),
+                p_data.get("url") or p.get("url", ""),
                 datetime.fromtimestamp(p.get("timestamp", 0)).strftime("%d.%m.%Y %H:%M"),
             ])
         return output.getvalue()
@@ -1929,15 +2121,18 @@ def _send_history_menu(chat_id: int, page: int = 0, search: str = ""):
     
     buttons = []
     for i, p in enumerate(projects):
-        title = p.get("title", "Без названия")[:40]
-        price = p.get("price", "")
+        # Совместимость со старым и новым форматом
+        p_data = p.get("data", {})
+        title = (p_data.get("title") or p.get("title", "Без названия"))[:40]
+        price = p_data.get("price") or p.get("price", "")
+        url = p_data.get("url") or p.get("url", "")
         date = datetime.fromtimestamp(p.get("timestamp", 0)).strftime("%d.%m")
         
         text += f"<b>{page * 10 + i + 1}.</b> {title}\n"
         text += f"💰 {price} | 📅 {date}\n\n"
         
         buttons.append([
-            {"text": f"{title[:25]}...", "url": p.get("url", "")},
+            {"text": f"{title[:25]}...", "url": url},
         ])
     
     nav_buttons = []
@@ -2654,6 +2849,10 @@ def _handle_update(update: dict):
         
         elif cb_data == "close_menu":
             _answer_callback(cb_id, "Закрыто")
+        
+        elif cb_data == "refresh_stats":
+            _send_user_dashboard(chat_id)
+            _answer_callback(cb_id, "🔄 Обновлено")
         
         elif cb_data == "subscription_menu":
             _send_subscription_menu(chat_id)
@@ -3932,19 +4131,7 @@ def _handle_update(update: dict):
             _send_deferred_list(chat_id)
         
         elif text == "/stats":
-            user_cats = get_user_categories(chat_id)
-            plan = get_user_plan(chat_id)
-            notifications_today = get_user_notifications_count(chat_id)
-            
-            send_message(
-                chat_id,
-                f"📊 <b>Ваша статистика</b>\n\n"
-                f"📊 Тариф: {plan['emoji']} {plan['name']}\n"
-                f"📂 Категорий: {len([c for c in user_cats if ':' not in c])}\n"
-                f"⚙️ Фильтров: {len([c for c in user_cats if ':' in c])}\n"
-                f"📬 Уведомлений сегодня: {notifications_today}\n\n"
-                f"💳 /subscription — управление подпиской",
-            )
+            _send_user_dashboard(chat_id)
         
         elif text == "/export_data":
             data = export_user_data(chat_id)
