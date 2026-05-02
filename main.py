@@ -16,7 +16,7 @@ from telegram_bot import (
     start_bot, get_interval, is_check_requested, clear_check_requested,
     ALL_SUBCATEGORIES, can_receive_notification, increment_notifications_count,
     get_user_plan, add_project_to_history, is_user_in_notification_hours,
-    notify_admin, get_user_min_budget,
+    notify_admin, get_user_min_budget, is_project_hidden,
 )
 
 from analytics import track_event
@@ -169,6 +169,11 @@ async def _fetch_and_notify_impl(api: Kwork, seen: set) -> set:
                 continue
             
             if is_user_notified(str(p.id), chat_id):
+                continue
+            
+            # Проверяем, не скрыл ли пользователь этот проект
+            if is_project_hidden(chat_id, str(p.id)):
+                log.debug("User %d: project %s hidden", chat_id, p.id)
                 continue
             
             can_notify, reason = can_receive_notification(chat_id)

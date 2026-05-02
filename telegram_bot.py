@@ -29,6 +29,7 @@ SENT_PROJECTS_FILE = os.path.join(DATA_DIR, "sent_projects.json")
 SUBSCRIPTIONS_FILE = os.path.join(DATA_DIR, "subscriptions.json")
 HISTORY_FILE = os.path.join(DATA_DIR, "user_history.json")
 FAVORITES_FILE = os.path.join(DATA_DIR, "favorites.json")
+HIDDEN_FILE = os.path.join(DATA_DIR, "hidden_projects.json")
 CONTACTS_FILE = os.path.join(DATA_DIR, "contacts.json")
 FAQ_CUSTOM_FILE = os.path.join(DATA_DIR, "faq_custom.json")
 
@@ -1247,6 +1248,37 @@ def count_user_favorites(chat_id: int) -> int:
     return len(favs.get(str(chat_id), {}))
 
 
+def load_hidden_projects() -> dict:
+    return _load_json(HIDDEN_FILE, {})
+
+
+def save_hidden_projects(hidden: dict):
+    _save_json(HIDDEN_FILE, hidden)
+
+
+def hide_project_for_user(chat_id: int, project_id: str):
+    """Скрывает проект для конкретного пользователя"""
+    with _lock:
+        hidden = load_hidden_projects()
+        if str(chat_id) not in hidden:
+            hidden[str(chat_id)] = []
+        
+        if project_id not in hidden[str(chat_id)]:
+            hidden[str(chat_id)].append(project_id)
+        
+        # Ограничиваем список скрытых проектов (последние 1000)
+        if len(hidden[str(chat_id)]) > 1000:
+            hidden[str(chat_id)] = hidden[str(chat_id)][-1000:]
+        
+        save_hidden_projects(hidden)
+
+
+def is_project_hidden(chat_id: int, project_id: str) -> bool:
+    """Проверяет, скрыт ли проект для пользователя"""
+    hidden = load_hidden_projects()
+    return project_id in hidden.get(str(chat_id), [])
+
+
 def load_config() -> dict:
     return _load_json(CONFIG_FILE, {"interval": 900})
 
@@ -1349,21 +1381,27 @@ def send_project_to_user(chat_id: int, text: str, project_url: str, sub_id: str,
     fav_text = "⭐ В избранном" if is_fav else "☆ В избранное"
     fav_cb = f"uf:{project_id}" if is_fav else f"af:{project_id}"
     
-    reply_markup = {
-        "inline_keyboard": [
-            [
-                {"text": "📋 Описание", "callback_data": f"pd:{project_id}"},
-                {"text": fav_text, "callback_data": fav_cb},
-            ],
-            [
-                {"text": "🔗 Открыть на Kwork", "url": project_url},
-                {"text": "🚫 Скрыть", "callback_data": f"ni:{project_id}"},
-            ],
-            [
-                {"text": "📉 Отписаться от категории", "callback_data": f"uc:{sub_id}"},
-            ],
-        ]
-    }
+    # Строим кнопки в зависимости от тарифа
+    buttons = []
+    
+    # Первый ряд: описание + избранное
+    row1 = [{"text": "📋 Подробнее", "callback_data": f"pd:{project_id}"}]
+    row1.append({"text": fav_text, "callback_data": fav_cb})
+    buttons.append(row1)
+    
+    # Второй ряд: отложить + скрыть
+    row2 = [{"text": "📌 Отложить", "callback_data": f"vl:{project_id}"}]
+    row2.append({"text": "🚫 Скрыть", "callback_data": f"ni:{project_id}"})
+    buttons.append(row2)
+    
+    # Третий ряд: открыть на Kwork
+    buttons.append([{"text": "🔗 Открыть на Kwork", "url": project_url}])
+    
+    # Четвертый ряд: отписаться (только для Pro/Basic)
+    if plan["filters_allowed"]:
+        buttons.append([{"text": "📉 Отписаться от категории", "callback_data": f"uc:{sub_id}"}])
+    
+    reply_markup = {"inline_keyboard": buttons}
     
     result = _api_post(SEND_URL, {
         "chat_id": chat_id,
@@ -3500,10 +3538,14 @@ def _handle_update(update: dict):
         
         elif cb_data.startswith("ni:"):
             pid = cb_data[3:]
+            
+            # Добавляем в скрытые
+            hide_project_for_user(chat_id, pid)
+            
             msg_id = cb.get("message", {}).get("message_id")
             if msg_id:
                 _edit_message_reply_markup(chat_id, msg_id)
-            _answer_callback(cb_id, "Удалено")
+            _answer_callback(cb_id, "🚫 Проект скрыт")
         
         elif cb_data.startswith("vl:"):
             pid = cb_data[3:]
@@ -3547,18 +3589,52 @@ def _handle_update(update: dict):
             category = project.get("category", "Категория")
             url = project.get("url", "")
             
+            # Определяем длину описания в зависимости от тарифа
+            plan = get_user_plan(chat_id)
+            if plan["name"] in ["Pro", "Admin"]:
+                desc_display = description  # Полное описание для Pro
+                tariff_note = "⭐ Pro тариф — полное описание"
+            elif plan["name"] == "Basic":
+                desc_display = description[:700]  # 700 символов для Basic
+                tariff_note = "💼 Basic тариф — до 700 символов"
+            else:
+                desc_display = description[:300]  # 300 символов для Free
+                tariff_note = "🆓 Free тариф — до 300 символов"
+            
+            if len(description) > len(desc_display):
+                desc_display += "...\n\n<i>📐 Для полного описания обновите тариф</i>"
+            
             full_text = (
-                f"📋 <b>Полное описание проекта</b>\n"
-                f"━━━━━━━━━━━━━━━━━━\n"
+                f"📋 <b>Подробности проекта</b>\n"
+                f"━━━━━━━━━━━━━━━━━━\n\n"
                 f"📝 <b>{title}</b>\n\n"
                 f"💰 {price}\n"
                 f"📂 {category}\n\n"
-                f"📝 <b>Описание:</b>\n{description}\n\n"
-                f"🔗 {url}"
+                f"<b>Описание:</b>\n"
+                f"{desc_display}\n\n"
+                f"━━━━━━━━━━━━━━━━━━\n"
+                f"<i>{tariff_note}</i>\n\n"
+                f"🔗 <a href=\"{url}\">Открыть на Kwork</a>"
             )
             
-            send_message(chat_id, full_text)
-            _answer_callback(cb_id, "📋 Описание показано")
+            # Добавляем кнопки действий
+            is_fav = is_in_favorites(chat_id, project_id)
+            fav_text = "⭐ В избранном" if is_fav else "☆ В избранное"
+            fav_cb = f"uf:{project_id}" if is_fav else f"af:{project_id}"
+            
+            buttons = [
+                [
+                    {"text": fav_text, "callback_data": fav_cb},
+                    {"text": "📌 Отложить", "callback_data": f"vl:{project_id}"},
+                ],
+                [
+                    {"text": "🔗 Открыть на Kwork", "url": url},
+                    {"text": "🚫 Скрыть", "callback_data": f"ni:{project_id}"},
+                ],
+            ]
+            
+            send_message(chat_id, full_text, reply_markup={"inline_keyboard": buttons})
+            _answer_callback(cb_id, "📋 Подробности показаны")
         
         elif cb_data.startswith("af:"):
             project_id = cb_data[3:]
@@ -3576,18 +3652,24 @@ def _handle_update(update: dict):
                 reply_markup = {
                     "inline_keyboard": [
                         [
-                            {"text": "📋 Описание", "callback_data": f"pd:{project_id}"},
+                            {"text": "📋 Подробнее", "callback_data": f"pd:{project_id}"},
                             {"text": "⭐ В избранном", "callback_data": f"uf:{project_id}"},
                         ],
                         [
-                            {"text": "🔗 Открыть на Kwork", "url": project.get("url", "")},
+                            {"text": "📌 Отложить", "callback_data": f"vl:{project_id}"},
                             {"text": "🚫 Скрыть", "callback_data": f"ni:{project_id}"},
                         ],
                         [
-                            {"text": "📉 Отписаться от категории", "callback_data": f"uc:{project.get('category', '')}"},
+                            {"text": "🔗 Открыть на Kwork", "url": project.get("url", "")},
                         ],
                     ]
                 }
+                
+                if plan["filters_allowed"]:
+                    reply_markup["inline_keyboard"].append([
+                        {"text": "📉 Отписаться от категории", "callback_data": f"uc:{project.get('categories', [''])[0] if project.get('categories') else ''}"}
+                    ])
+                
                 _edit_message_reply_markup(chat_id, msg_id, reply_markup)
             
             _answer_callback(cb_id, "⭐ Добавлено в избранное")
@@ -3603,18 +3685,24 @@ def _handle_update(update: dict):
                 reply_markup = {
                     "inline_keyboard": [
                         [
-                            {"text": "📋 Описание", "callback_data": f"pd:{project_id}"},
+                            {"text": "📋 Подробнее", "callback_data": f"pd:{project_id}"},
                             {"text": "☆ В избранное", "callback_data": f"af:{project_id}"},
                         ],
                         [
-                            {"text": "🔗 Открыть на Kwork", "url": project.get("url", "") if project else ""},
+                            {"text": "📌 Отложить", "callback_data": f"vl:{project_id}"},
                             {"text": "🚫 Скрыть", "callback_data": f"ni:{project_id}"},
                         ],
                         [
-                            {"text": "📉 Отписаться от категории", "callback_data": f"uc:{project.get('category', '') if project else ''}"},
+                            {"text": "🔗 Открыть на Kwork", "url": project.get("url", "") if project else ""},
                         ],
                     ]
                 }
+                
+                if plan["filters_allowed"] and project:
+                    reply_markup["inline_keyboard"].append([
+                        {"text": "📉 Отписаться от категории", "callback_data": f"uc:{project.get('categories', [''])[0] if project.get('categories') else ''}"}
+                    ])
+                
                 _edit_message_reply_markup(chat_id, msg_id, reply_markup)
             
             _answer_callback(cb_id, "❌ Удалено из избранного")
