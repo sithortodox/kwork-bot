@@ -16,5 +16,6 @@ COPY promos.py .
 COPY analytics.py .
 COPY rate_limiter.py .
 COPY backup.py .
+COPY category_stats.py .
 
 CMD ["python", "main.py"]
